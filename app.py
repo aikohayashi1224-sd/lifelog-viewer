@@ -17,7 +17,9 @@ def fetch_logs():
         "Authorization": f"Bearer {SUPABASE_KEY}",
     }
     response = requests.get(url, headers=headers)
-    response.raise_for_status()
+    if response.status_code != 200:
+        st.error(f"Supabase エラー ({response.status_code}): {response.text}")
+        st.stop()
     return response.json()
 
 
