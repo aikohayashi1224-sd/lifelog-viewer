@@ -96,6 +96,21 @@
   .list-date{font-size:0.85rem;color:var(--text-muted);font-weight:700;margin:16px 0 4px;}
   .list-date:first-child{margin-top:0;}
 
+  /* record */
+  .rec h3{margin:0 0 4px;font-size:1.05rem;}
+  .rec .sub{margin:0 0 10px;color:var(--text-muted);font-size:0.85rem;}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 12px;}
+  .chip{padding:8px 16px;border:1px solid var(--border);border-radius:999px;background:var(--bg);font-weight:700;}
+  .chip.on{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .rec .btn{padding:10px 26px;border:none;border-radius:999px;background:var(--accent);color:#fff;font-weight:700;}
+  .rec .btn:disabled{opacity:.45;cursor:default;}
+  .rec .or{margin:22px 0 14px;color:var(--text-muted);font-size:0.85rem;text-align:center;}
+  .rec textarea{width:100%;min-height:200px;padding:14px;border:1px solid var(--border);border-radius:16px;background:var(--bg);color:var(--text);font:inherit;resize:vertical;line-height:1.8;}
+  .rec .row{display:flex;align-items:center;gap:12px;margin-top:10px;}
+  .rec .hint{font-size:0.78rem;color:var(--text-muted);}
+  .rec .result{margin-top:14px;display:flex;align-items:center;gap:10px;min-height:44px;font-weight:700;}
+  .rec .result .knot-pop{width:44px;height:44px;animation:pop .6s ease-out;}
+  @keyframes pop{from{transform:scale(.2) rotate(-40deg);opacity:0;}to{transform:scale(1) rotate(0);opacity:1;}}
   .foot{margin-top:28px;text-align:center;font-size:0.75rem;color:var(--text-muted);}
   @media (max-width:520px){ .day{min-height:54px;} .day .knot{width:24px;height:24px;} }
 </style>
@@ -137,11 +152,25 @@
     </section>
 
     <div class="tabs">
-      <button class="tab on" id="tab-cal" type="button">カレンダー</button>
+      <button class="tab on" id="tab-rec" type="button">記録</button>
+      <button class="tab" id="tab-cal" type="button">カレンダー</button>
       <button class="tab" id="tab-list" type="button">リスト</button>
     </div>
 
-    <section class="card" id="cal-view">
+    <section class="card rec" id="rec-view">
+      <div id="routine-box"></div>
+      <div class="or" id="or-line">―― または ――</div>
+      <h3>ひとこと日記</h3>
+      <p class="sub">今日あった良いことを書いてみましょう。誤字もそのまま残ります。</p>
+      <textarea id="diary" placeholder="今日あった良いことを書いてみましょう"></textarea>
+      <div class="row">
+        <button class="btn" id="diary-btn" type="button" disabled>記録する</button>
+        <span class="hint">Ctrl + Enter でも記録できます</span>
+      </div>
+      <div class="result" id="rec-result" role="status"></div>
+    </section>
+
+    <section class="card hidden" id="cal-view">
       <div class="cal-head">
         <button class="nav-btn" id="prev" type="button">＜ 前月</button>
         <h3 id="month-title"></h3>
@@ -184,7 +213,10 @@ let logs = [];
 let members = [];
 let view = { y: 0, m: 0 };     // m: 0-11
 let selectedDay = null;
-let tab = "cal";
+let tab = "rec";
+let routines = [];
+let picked = {};          // routine.id -> option
+let sending = false;
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -218,6 +250,40 @@ function demoData() {
   ];
 }
 
+async function callGas(payload) {
+  if (DEMO) return demoGas(payload);
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error("no session");
+  const res = await fetch(GAS_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ ...payload, access_token: session.access_token, user_id: session.user.id }),
+  });
+  return res.json();
+}
+
+function demoGas(p) {
+  if (p.source === "get_group_today") return { status: "ok", members };
+  if (p.source === "get_routines") return { status: "ok", routines: [{ id: "r1", prompt: "歯を磨いたか？", options: ["磨いた", "これから"] }] };
+  const now = new Date().toISOString();
+  if (p.source === "submit_routine_answers") {
+    p.answers.forEach((a) => logs.unshift({ id: "x" + Math.random(), created_at: now, raw_text: a.prompt + ": " + a.selected_option, polished_text: a.prompt + ": " + a.selected_option, is_checkbox: true }));
+    members.forEach((m) => { if (m.is_self) m.logged_today = true; });
+    return { status: "ok" };
+  }
+  if (p.source === "android") {
+    logs.unshift({ id: "x" + Math.random(), created_at: now, raw_text: p.raw_text, polished_text: p.raw_text, is_checkbox: false });
+    members.forEach((m) => { if (m.is_self) m.logged_today = true; });
+    return { status: "ok" };
+  }
+  return { status: "error" };
+}
+
+async function loadRoutines() {
+  const json = await callGas({ source: "get_routines" });
+  routines = json.status === "ok" ? (json.routines || []).map((r) => ({ id: r.id, prompt: r.prompt, options: r.options || [] })) : [];
+}
+
 async function loadLogs() {
   if (DEMO) return;
   const { data, error } = await sb.from("logs")
@@ -228,15 +294,7 @@ async function loadLogs() {
 }
 
 async function loadStatus() {
-  if (DEMO) return;
-  const { data: { session } } = await sb.auth.getSession();
-  if (!session) return;
-  const res = await fetch(GAS_URL, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ source: "get_group_today", access_token: session.access_token, user_id: session.user.id }),
-  });
-  const json = await res.json();
+  const json = await callGas({ source: "get_group_today" });
   members = json.status === "ok" ? (json.members || []) : [];
 }
 
@@ -275,6 +333,73 @@ function renderStatus(error) {
     wrap.appendChild(item);
   });
   box.appendChild(wrap);
+}
+
+/* ---------- 表示：記録 ---------- */
+function setResult(text, withKnot) {
+  const box = $("rec-result");
+  box.replaceChildren();
+  if (withKnot) { const k = el("span"); k.innerHTML = KNOT.replace('class="knot"', 'class="knot knot-pop"'); box.appendChild(k.firstChild); }
+  if (text) box.appendChild(el("span", null, text));
+}
+
+function renderRoutine() {
+  const box = $("routine-box");
+  box.replaceChildren();
+  const orLine = $("or-line");
+  if (!routines.length) {
+    orLine.classList.add("hidden");
+    box.appendChild(el("p", "sub", "スマホのアプリの設定で「今日の問いかけ」を決めると、ここで選んで記録できます。"));
+    return;
+  }
+  orLine.classList.remove("hidden");
+  routines.forEach((r) => {
+    box.appendChild(el("h3", null, r.prompt));
+    const chips = el("div", "chips");
+    r.options.forEach((o) => {
+      const b = el("button", "chip" + (picked[r.id] === o ? " on" : ""), o);
+      b.type = "button";
+      b.addEventListener("click", () => { picked[r.id] = o; renderRoutine(); });
+      chips.appendChild(b);
+    });
+    box.appendChild(chips);
+  });
+  const go = el("button", "btn", "記録する");
+  go.type = "button";
+  go.disabled = sending || !Object.keys(picked).length;
+  go.addEventListener("click", submitRoutines);
+  box.appendChild(go);
+}
+
+async function afterRecorded() {
+  try { await loadLogs(); } catch (e) { console.error(e); }
+  renderCalendar(); renderList();
+  try { await loadStatus(); renderStatus(false); } catch (e) { console.error(e); }
+}
+
+async function submitRoutines() {
+  if (sending) return;
+  const answers = routines.filter((r) => picked[r.id]).map((r) => ({ routine_id: r.id, prompt: r.prompt, selected_option: picked[r.id] }));
+  if (!answers.length) return;
+  sending = true; renderRoutine(); setResult("送信しています…");
+  try {
+    const json = await callGas({ source: "submit_routine_answers", answers });
+    if (json.status === "ok") { picked = {}; setResult("記録しました。", true); await afterRecorded(); }
+    else setResult("記録できませんでした。もう一度お試しください。");
+  } catch (e) { console.error(e); setResult("通信に失敗しました。もう一度お試しください。"); }
+  finally { sending = false; renderRoutine(); }
+}
+
+async function submitDiary() {
+  const text = $("diary").value.trim();
+  if (sending || !text) return;
+  sending = true; $("diary-btn").disabled = true; renderRoutine(); setResult("送信しています…");
+  try {
+    const json = await callGas({ source: "android", raw_text: text });
+    if (json.status === "ok") { $("diary").value = ""; setResult("記録しました。", true); await afterRecorded(); }
+    else setResult("記録できませんでした。もう一度お試しください。");
+  } catch (e) { console.error(e); setResult("通信に失敗しました。もう一度お試しください。"); }
+  finally { sending = false; $("diary-btn").disabled = !$("diary").value.trim(); renderRoutine(); }
 }
 
 /* ---------- 表示：カレンダー ---------- */
@@ -356,6 +481,8 @@ function renderList() {
 /* ---------- 画面切り替え ---------- */
 function setTab(t) {
   tab = t;
+  $("tab-rec").classList.toggle("on", t === "rec");
+  $("rec-view").classList.toggle("hidden", t !== "rec");
   $("tab-cal").classList.toggle("on", t === "cal");
   $("tab-list").classList.toggle("on", t === "list");
   $("cal-view").classList.toggle("hidden", t !== "cal");
@@ -378,10 +505,11 @@ async function showApp(email) {
   const [y, m] = todayKey().split("-").map(Number);
   view = { y, m: m - 1 };
   selectedDay = todayKey();
-  setTab("cal");
+  setTab("rec");
 
   if (DEMO) demoData();
-  renderCalendar(); renderList();
+  renderCalendar(); renderList(); renderRoutine();
+  loadRoutines().then(renderRoutine).catch((e) => { console.error(e); renderRoutine(); });
   try { await loadLogs(); renderCalendar(); renderList(); }
   catch (e) { console.error(e); $("detail").replaceChildren(el("div", "empty-note", "記録を読み込めませんでした。時間をおいて、もう一度お試しください。")); }
 
@@ -421,7 +549,11 @@ $("logout").addEventListener("click", async () => {
 });
 $("prev").addEventListener("click", () => { view.m--; if (view.m < 0) { view.m = 11; view.y--; } renderCalendar(); });
 $("next").addEventListener("click", () => { view.m++; if (view.m > 11) { view.m = 0; view.y++; } renderCalendar(); });
+$("tab-rec").addEventListener("click", () => setTab("rec"));
 $("tab-cal").addEventListener("click", () => setTab("cal"));
+$("diary").addEventListener("input", () => { $("diary-btn").disabled = sending || !$("diary").value.trim(); });
+$("diary").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") submitDiary(); });
+$("diary-btn").addEventListener("click", submitDiary);
 $("tab-list").addEventListener("click", () => setTab("list"));
 
 /* ---------- 起動 ---------- */
@@ -431,7 +563,7 @@ if (DEMO) {
   let started = false;
   sb.auth.onAuthStateChange((event, session) => {
     if (session && session.user) { if (!started) { started = true; showApp(session.user.email); } }
-    else { started = false; logs = []; members = []; showLogin(); }
+    else { started = false; logs = []; members = []; routines = []; picked = {}; showLogin(); }
   });
   sb.auth.getSession().then(({ data: { session } }) => { if (!session) showLogin(); });
 }
