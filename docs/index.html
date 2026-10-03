@@ -62,6 +62,8 @@
   .badge{position:absolute;right:-8px;top:-8px;width:30px;height:30px;border-radius:50%;background:var(--surface);padding:1px;}
   .member.self .badge{width:36px;height:36px;}
   .member .name{margin-top:6px;font-size:0.78rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .group-title{margin:14px 0 4px;font-size:0.85rem;font-weight:700;text-align:center;}
+  .group-title:first-child{margin-top:0;}
   .status .note{font-size:0.85rem;color:var(--text-muted);text-align:center;}
 
   /* tabs */
@@ -210,7 +212,8 @@ const dayKey = (iso) => jstKey.format(new Date(iso));
 const todayKey = () => jstKey.format(new Date());
 
 let logs = [];
-let members = [];
+let members = [];          // デモ用の自分を含むメンバー
+let groupsData = [];       // [{ name, members: [...] }]
 let view = { y: 0, m: 0 };     // m: 0-11
 let selectedDay = null;
 let tab = "rec";
@@ -248,6 +251,10 @@ function demoData() {
     { is_self: false, nickname: "お父さん", logged_today: true, avatar_emoji: "", avatar_image: "" },
     { is_self: false, nickname: "お兄さん", logged_today: true, avatar_emoji: "🐶", avatar_image: "" },
   ];
+  groupsData = [
+    { name: "佐藤ファミリー", members },
+    { name: "大学の友だち", members: [members[0], { is_self: false, nickname: "ゆうと", logged_today: false, avatar_emoji: "", avatar_image: "" }, { is_self: false, nickname: "さくら", logged_today: true, avatar_emoji: "🌸", avatar_image: "" }] },
+  ];
 }
 
 async function callGas(payload) {
@@ -263,7 +270,7 @@ async function callGas(payload) {
 }
 
 function demoGas(p) {
-  if (p.source === "get_group_today") return { status: "ok", members };
+  if (p.source === "get_group_today") return { status: "ok", groups: groupsData };
   if (p.source === "get_routines") return { status: "ok", routines: [{ id: "r1", prompt: "歯を磨いたか？", options: ["磨いた", "これから"] }] };
   const now = new Date().toISOString();
   if (p.source === "submit_routine_answers") {
@@ -295,44 +302,52 @@ async function loadLogs() {
 
 async function loadStatus() {
   const json = await callGas({ source: "get_group_today" });
-  members = json.status === "ok" ? (json.members || []) : [];
+  groupsData = json.status === "ok"
+    ? (json.groups || (json.members ? [{ name: null, members: json.members }] : []))
+    : [];
 }
 
 /* ---------- 表示：ステータス ---------- */
+function memberNode(m) {
+  const label = m.is_self ? "あなた" : (m.nickname || (m.email || "").split("@")[0] || "?");
+  const item = el("div", "member" + (m.is_self ? " self" : ""));
+  const aw = el("div", "avatar-wrap");
+  const av = el("div", "avatar");
+  if (m.avatar_image) {
+    const img = document.createElement("img");
+    img.alt = ""; img.src = "data:image/jpeg;base64," + m.avatar_image;
+    av.appendChild(img);
+  } else if (m.avatar_emoji) {
+    av.appendChild(el("span", "emoji", m.avatar_emoji));
+  } else {
+    av.textContent = m.is_self ? "私" : label.slice(0, 1);
+  }
+  aw.appendChild(av);
+  if (m.logged_today) {
+    const bd = el("div", "badge");
+    bd.innerHTML = KNOT;
+    aw.appendChild(bd);
+  }
+  item.appendChild(aw);
+  item.appendChild(el("div", "name", label));
+  return item;
+}
+
 function renderStatus(error) {
   const box = $("members");
   box.replaceChildren();
   if (error) { box.appendChild(el("div", "note", "ステータスを読み込めませんでした。")); return; }
-  if (members.length < 2) {
+  const shown = groupsData.filter((g) => (g.members || []).length >= 2);
+  if (!shown.length) {
     box.appendChild(el("div", "note", "グループに2人以上いると、家族のステータスが表示されます。"));
     return;
   }
-  const wrap = el("div", "members");
-  [...members].sort((a, b) => (b.is_self ? 1 : 0) - (a.is_self ? 1 : 0)).forEach((m) => {
-    const label = m.is_self ? "あなた" : (m.nickname || (m.email || "").split("@")[0] || "?");
-    const item = el("div", "member" + (m.is_self ? " self" : ""));
-    const aw = el("div", "avatar-wrap");
-    const av = el("div", "avatar");
-    if (m.avatar_image) {
-      const img = document.createElement("img");
-      img.alt = ""; img.src = "data:image/jpeg;base64," + m.avatar_image;
-      av.appendChild(img);
-    } else if (m.avatar_emoji) {
-      av.appendChild(el("span", "emoji", m.avatar_emoji));
-    } else {
-      av.textContent = m.is_self ? "私" : label.slice(0, 1);
-    }
-    aw.appendChild(av);
-    if (m.logged_today) {
-      const b = el("div", "badge");
-      b.innerHTML = KNOT;
-      aw.appendChild(b);
-    }
-    item.appendChild(aw);
-    item.appendChild(el("div", "name", label));
-    wrap.appendChild(item);
+  shown.forEach((g, i) => {
+    if (shown.length > 1) box.appendChild(el("div", "group-title", g.name || "グループ" + (i + 1)));
+    const wrap = el("div", "members");
+    [...g.members].sort((x, y) => (y.is_self ? 1 : 0) - (x.is_self ? 1 : 0)).forEach((m) => wrap.appendChild(memberNode(m)));
+    box.appendChild(wrap);
   });
-  box.appendChild(wrap);
 }
 
 /* ---------- 表示：記録 ---------- */
@@ -563,7 +578,7 @@ if (DEMO) {
   let started = false;
   sb.auth.onAuthStateChange((event, session) => {
     if (session && session.user) { if (!started) { started = true; showApp(session.user.email); } }
-    else { started = false; logs = []; members = []; routines = []; picked = {}; showLogin(); }
+    else { started = false; logs = []; members = []; groupsData = []; routines = []; picked = {}; showLogin(); }
   });
   sb.auth.getSession().then(({ data: { session } }) => { if (!session) showLogin(); });
 }
