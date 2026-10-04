@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>日程の返事</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&display=swap">
+<style>
+  :root{
+    --bg:#FBF3E7; --surface:#FFFBF2; --text:#3B2E27; --muted:#7A6A5C; --border:#E6D8C3; --accent:#C1694F; --accent-soft:#F3DCD3;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#2A2119; --surface:#352A20; --text:#F1E6D8; --muted:#C9B8A6; --border:#4A3C2E; --accent:#E08464; --accent-soft:rgba(224,132,100,0.2); color-scheme: dark; }
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:"Zen Kaku Gothic New","Noto Sans JP",sans-serif;font-size:18px;line-height:1.8;}
+  .wrap{max-width:560px;margin:0 auto;padding:28px 18px 80px;}
+  h1{font-size:1.5rem;font-weight:900;margin:0 0 6px;}
+  .lead{color:var(--muted);margin:0 0 22px;font-size:1rem;}
+  label{display:block;font-weight:700;margin:18px 0 6px;}
+  input[type=text]{width:100%;padding:14px 16px;font:inherit;border:2px solid var(--border);border-radius:14px;background:var(--surface);color:var(--text);}
+  .date{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:16px;margin:14px 0;}
+  .date .d{font-size:1.25rem;font-weight:700;margin-bottom:10px;}
+  .btns{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+  .btn{padding:14px 4px;font:inherit;font-weight:700;border:2px solid var(--border);border-radius:14px;background:var(--bg);color:var(--text);cursor:pointer;}
+  .btn small{display:block;font-weight:400;font-size:0.8rem;color:var(--muted);}
+  .btn.on{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .btn.on small{color:#fff;}
+  .send{display:block;width:100%;margin-top:26px;padding:18px;font:inherit;font-size:1.1rem;font-weight:900;border:none;border-radius:999px;background:var(--accent);color:#fff;cursor:pointer;}
+  .send:disabled{opacity:.5;cursor:default;}
+  .msg{margin-top:16px;min-height:1.6em;color:var(--accent);font-weight:700;}
+  .done{text-align:center;padding:40px 10px;}
+  .done h2{font-size:1.4rem;}
+  .foot{margin-top:30px;color:var(--muted);font-size:0.85rem;text-align:center;}
+  .hidden{display:none !important;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="loading">読み込んでいます…</div>
+
+  <div id="closed" class="hidden">
+    <h1>このリンクは、使えません</h1>
+    <p class="lead">日にちがすでに決まったか、日程の相談が取りやめになった可能性があります。送ってくれた人に、聞いてみてください。</p>
+  </div>
+
+  <div id="form" class="hidden">
+    <h1 id="title"></h1>
+    <p class="lead">行ける日を、教えてください。アプリのインストールや、ログインは、いりません。</p>
+    <label for="name">お名前</label>
+    <input id="name" type="text" maxlength="20" placeholder="例: 山田花子" autocomplete="name">
+    <div id="dates"></div>
+    <button class="send" id="send" type="button" disabled>この内容で送る</button>
+    <div class="msg" id="msg" role="alert"></div>
+  </div>
+
+  <div id="done" class="done hidden">
+    <h2>ありがとうございました</h2>
+    <p>返事を送りました。日にちが決まったら、送ってくれた人から、連絡があります。</p>
+    <p class="lead">まちがえたときは、もう一度、同じお名前で送れば、上書きされます。</p>
+    <button class="send" id="again" type="button">もう一度、答える</button>
+  </div>
+
+  <p class="foot">つなぐろぐ</p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SB_URL = "https://mvubkpesgiqofhfyshpo.supabase.co";
+const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im12dWJrcGVzZ2lxb2ZoZnlzaHBvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1NjY1MjEsImV4cCI6MjEwNDE0MjUyMX0.4EgWAtkMF0KmMhxE-8VipZCqa1f8zjGUC-Y4IUY01N8";
+const sb = supabase.createClient(SB_URL, SB_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+const token = new URLSearchParams(location.search).get("t") || "";
+const $ = (id) => document.getElementById(id);
+const picked = {};   // date_id -> yes|maybe|no
+const WD = ["日", "月", "火", "水", "木", "金", "土"];
+const LABELS = [["yes", "◯", "行ける"], ["maybe", "△", "行けるかも"], ["no", "×", "難しい"]];
+
+function fmt(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const w = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  return y + "年" + m + "月" + d + "日（" + WD[w] + "）";
+}
+
+function show(id) {
+  ["loading", "closed", "form", "done"].forEach((x) => $(x).classList.toggle("hidden", x !== id));
+}
+
+function updateSend() {
+  $("send").disabled = !$("name").value.trim() || Object.keys(picked).length === 0;
+}
+
+function render(info) {
+  $("title").textContent = "「" + info.title + "」の日程の相談です";
+  const box = $("dates");
+  box.replaceChildren();
+  info.dates.forEach((d) => {
+    const card = document.createElement("div");
+    card.className = "date";
+    const t = document.createElement("div");
+    t.className = "d";
+    t.textContent = fmt(d.date);
+    card.appendChild(t);
+    const row = document.createElement("div");
+    row.className = "btns";
+    LABELS.forEach(([key, mark, text]) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "btn" + (picked[d.id] === key ? " on" : "");
+      b.innerHTML = mark + "<small>" + text + "</small>";
+      b.addEventListener("click", () => { picked[d.id] = key; render(info); updateSend(); });
+      row.appendChild(b);
+    });
+    card.appendChild(row);
+    box.appendChild(card);
+  });
+}
+
+let info = null;
+async function init() {
+  try {
+    if (!token) { show("closed"); return; }
+    const { data, error } = await sb.rpc("get_meetup_for_reply", { p_token: token });
+    if (error || !data) { show("closed"); return; }
+    info = data;
+    render(info);
+    show("form");
+  } catch (e) {
+    console.error(e);
+    show("closed");
+  }
+}
+
+$("name").addEventListener("input", updateSend);
+$("send").addEventListener("click", async () => {
+  $("msg").textContent = "";
+  $("send").disabled = true;
+  try {
+    const answers = Object.entries(picked).map(([date_id, answer]) => ({ date_id, answer }));
+    const { data, error } = await sb.rpc("submit_guest_answers", { p_token: token, p_name: $("name").value, p_answers: answers });
+    if (error || data !== true) { $("msg").textContent = "送れませんでした。時間をおいて、もう一度お試しください。"; }
+    else show("done");
+  } catch (e) {
+    console.error(e);
+    $("msg").textContent = "通信に失敗しました。もう一度お試しください。";
+  } finally {
+    updateSend();
+  }
+});
+$("again").addEventListener("click", () => show("form"));
+
+init();
+</script>
+</body>
+</html>
